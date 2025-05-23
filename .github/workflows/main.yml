@@ -50,7 +50,7 @@ jobs:
             
             # Delete all containers and images
             sudo docker compose down --volumes
-            sudo docker rmi $(sudo docker images -q)
+            sudo docker rmi -f $(sudo docker images -q)
 
             # Start the containers using Docker Compose
             sudo docker compose up -d
