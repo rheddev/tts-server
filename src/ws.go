@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -16,7 +17,8 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 	// Add CORS check
 	CheckOrigin: func(r *http.Request) bool {
-		return true // In production, replace with proper origin check
+		// Only allow requests from the frontend url
+		return r.Header.Get("Origin") == os.Getenv("FRONTEND_URL")
 	},
 }
 
@@ -69,7 +71,7 @@ func (hub *Hub) run() {
 					client.Close()
 					delete(hub.clients, client)
 				}
-				addMessage(message.Name, message.Amount, message.Message)
+				addMessage(message.SessionID, message.Name, message.Amount, message.Message, message.Description)
 			}
 			hub.mutex.Unlock()
 		}
@@ -127,6 +129,23 @@ func sendHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
 		return
 	}
+
+	// If session exists, send Bad Request, Status code 409
+	exists, err := checkSessionID(req.SessionID)
+	if exists && err == nil {
+		log.Printf("Session already exists: %s", req.SessionID)
+		c.JSON(http.StatusConflict, gin.H{"error": "Session already exists"})
+		return
+	}
+
+	if err != nil {
+		log.Printf("Error checking session ID: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check session ID"})
+		return
+	}
+
+	// log exists
+	log.Printf("Session ID exists: %t", exists)
 
 	// Validate message
 	if req.Message == "" {

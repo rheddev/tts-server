@@ -17,9 +17,11 @@ import (
 )
 
 type Message struct {
-	Name    string  `json:"name"`
-	Amount  float32 `json:"amount"`
-	Message string  `json:"message"`
+	SessionID   string  `json:"session_id"`
+	Name        string  `json:"name"`
+	Amount      float32 `json:"amount"`
+	Message     string  `json:"message"`
+	Description string  `json:"description"`
 }
 
 type Config struct {
@@ -30,6 +32,9 @@ type Config struct {
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
 	ShutdownTimeout time.Duration
+	UseTLS          bool
+	CertFile        string
+	KeyFile         string
 }
 
 func loadConfig() (*Config, error) {
@@ -45,10 +50,28 @@ func loadConfig() (*Config, error) {
 		ReadTimeout:     time.Duration(getEnvIntOrDefault("READ_TIMEOUT", 5)) * time.Second,
 		WriteTimeout:    time.Duration(getEnvIntOrDefault("WRITE_TIMEOUT", 10)) * time.Second,
 		ShutdownTimeout: time.Duration(getEnvIntOrDefault("SHUTDOWN_TIMEOUT", 30)) * time.Second,
+		UseTLS:          getEnvBoolOrDefault("USE_TLS", true),
+		CertFile:        getEnvOrDefault("CERT_FILE", "./tts-server.pem"),
+		KeyFile:         getEnvOrDefault("KEY_FILE", "./tts-server-key.pem"),
 	}
 
 	if config.AdminPassword == "" {
 		return nil, fmt.Errorf("ADMIN_PASSWORD environment variable is required")
+	}
+
+	// Validate TLS configuration
+	if config.UseTLS {
+		if config.CertFile == "" || config.KeyFile == "" {
+			return nil, fmt.Errorf("CERT_FILE and KEY_FILE environment variables are required when USE_TLS is true")
+		}
+
+		// Check if certificate files exist
+		if _, err := os.Stat(config.CertFile); os.IsNotExist(err) {
+			return nil, fmt.Errorf("certificate file not found: %s", config.CertFile)
+		}
+		if _, err := os.Stat(config.KeyFile); os.IsNotExist(err) {
+			return nil, fmt.Errorf("key file not found: %s", config.KeyFile)
+		}
 	}
 
 	return config, nil
@@ -77,7 +100,11 @@ func setupRouter(config *Config) *gin.Engine {
 
 	// Health check endpoint
 	r.GET("/ping", func(c *gin.Context) {
-		c.String(http.StatusOK, "pong\n")
+		c.JSON(http.StatusOK, gin.H{
+			"status":    "ok",
+			"message":   "pong",
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
 	})
 
 	// WebSocket setup
@@ -146,12 +173,21 @@ func main() {
 	// Start server in a goroutine
 	go func() {
 		log.Printf("Server starting on port %s", config.Port)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+
+		if config.UseTLS {
+			log.Printf("TLS enabled with certificate: %s and key: %s", config.CertFile, config.KeyFile)
+			err = srv.ListenAndServeTLS(config.CertFile, config.KeyFile)
+		} else {
+			err = srv.ListenAndServe()
+		}
+
+		if err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to start server: %v", err)
 		}
 	}()
 
-	// Wait for interrupt signal to gracefully shutdown the server
+	// Wait for interrupt signal to gracefully shutdown the ser0ver
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -184,6 +220,15 @@ func getEnvIntOrDefault(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if intValue, err := strconv.Atoi(value); err == nil {
 			return intValue
+		}
+	}
+	return defaultValue
+}
+
+func getEnvBoolOrDefault(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if boolValue, err := strconv.ParseBool(value); err == nil {
+			return boolValue
 		}
 	}
 	return defaultValue
